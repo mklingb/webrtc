@@ -282,7 +282,7 @@ func TestSampleBuilder(t *testing.T) {
 					time.Millisecond*time.Duration(int64(t.maxLateTimestamp)),
 				))
 			}
-
+			opts = append(opts, WithJitterBufferMinimumLength(1))
 			d := &fakeDepacketizer{
 				headChecker: t.withHeadChecker,
 				headBytes:   t.headBytes,
@@ -304,7 +304,7 @@ func TestSampleBuilder(t *testing.T) {
 // SampleBuilder should respect maxLate if we popped successfully but then have a gap larger then maxLate
 func TestSampleBuilderMaxLate(t *testing.T) {
 	assert := assert.New(t)
-	s := New(50, &fakeDepacketizer{}, 1)
+	s := New(50, &fakeDepacketizer{}, 1, WithJitterBufferMinimumLength(1))
 
 	s.Push(&rtp.Packet{Header: rtp.Header{SequenceNumber: 0, Timestamp: 1}, Payload: []byte{0x01}})
 	s.Push(&rtp.Packet{Header: rtp.Header{SequenceNumber: 1, Timestamp: 2}, Payload: []byte{0x01}})
@@ -353,7 +353,7 @@ func TestSampleBuilderCleanReference(t *testing.T) {
 	} {
 		seqStart := seqStart
 		t.Run(fmt.Sprintf("From%d", seqStart), func(t *testing.T) {
-			s := New(10, &fakeDepacketizer{}, 1)
+			s := New(10, &fakeDepacketizer{}, 1, WithJitterBufferMinimumLength(1))
 
 			s.Push(&rtp.Packet{Header: rtp.Header{SequenceNumber: 0 + seqStart, Timestamp: 0}, Payload: []byte{0x01}})
 			s.Push(&rtp.Packet{Header: rtp.Header{SequenceNumber: 1 + seqStart, Timestamp: 0}, Payload: []byte{0x02}})
@@ -364,14 +364,18 @@ func TestSampleBuilderCleanReference(t *testing.T) {
 			s.Push(pkt5)
 
 			for i := 0; i < 3; i++ {
-				if s.buffer[(i+int(seqStart))%0x10000] != nil {
+				pkt, err := s.buffer.PeekAtSequence(uint16((i + int(seqStart)) % 0x10000))
+
+				if pkt != nil || err == nil {
 					t.Errorf("Old packet (%d) is not unreferenced (maxLate: 10, pushed: 12)", i)
 				}
 			}
-			if s.buffer[(14+int(seqStart))%0x10000] != pkt4 {
+			pkt, err := s.buffer.PeekAtSequence(uint16((14 + int(seqStart)) % 0x10000))
+			if pkt != pkt4 || err != nil {
 				t.Error("New packet must be referenced after jump")
 			}
-			if s.buffer[(12+int(seqStart))%0x10000] != pkt5 {
+			pkt, err = s.buffer.PeekAtSequence(uint16((12 + int(seqStart)) % 0x10000))
+			if pkt != pkt5 || err != nil {
 				t.Error("New packet must be referenced after jump")
 			}
 		})
@@ -388,7 +392,7 @@ func TestSampleBuilderPushMaxZero(t *testing.T) {
 		headBytes:   []byte{0x01},
 	}
 
-	s := New(0, d, 1)
+	s := New(0, d, 1, WithJitterBufferMinimumLength(1))
 	s.Push(&pkts[0])
 	if sample := s.Pop(); sample == nil {
 		t.Error("Should expect a popped sample")
@@ -409,7 +413,7 @@ func TestSampleBuilderWithPacketReleaseHandler(t *testing.T) {
 		{Header: rtp.Header{SequenceNumber: 13, Timestamp: 122}, Payload: []byte{0x04}},
 		{Header: rtp.Header{SequenceNumber: 21, Timestamp: 200}, Payload: []byte{0x05}},
 	}
-	s := New(10, &fakeDepacketizer{}, 1, WithPacketReleaseHandler(fakePacketReleaseHandler))
+	s := New(10, &fakeDepacketizer{}, 1, WithPacketReleaseHandler(fakePacketReleaseHandler), WithJitterBufferMinimumLength(1))
 	s.Push(&pkts[0])
 	s.Push(&pkts[1])
 	if len(released) == 0 {
@@ -446,7 +450,7 @@ func TestSampleBuilderWithPacketHeadHandler(t *testing.T) {
 	s := New(10, &fakeDepacketizer{}, 1, WithPacketHeadHandler(func(headPacket interface{}) interface{} {
 		headCount++
 		return true
-	}))
+	}), WithJitterBufferMinimumLength(1))
 
 	for _, pkt := range packets {
 		s.Push(pkt)
@@ -467,7 +471,7 @@ func TestSampleBuilderWithPacketHeadHandler(t *testing.T) {
 
 func TestPopWithTimestamp(t *testing.T) {
 	t.Run("Crash on nil", func(t *testing.T) {
-		s := New(0, &fakeDepacketizer{}, 1)
+		s := New(0, &fakeDepacketizer{}, 1, WithJitterBufferMinimumLength(1))
 		sample, timestamp := s.PopWithTimestamp()
 		assert.Nil(t, sample)
 		assert.Equal(t, uint32(0), timestamp)
@@ -483,6 +487,7 @@ func (f *truePartitionHeadChecker) IsPartitionHead([]byte) bool {
 func TestSampleBuilderData(t *testing.T) {
 	s := New(10, &fakeDepacketizer{}, 1,
 		WithPartitionHeadChecker(&truePartitionHeadChecker{}),
+		WithJitterBufferMinimumLength(1),
 	)
 	j := 0
 	for i := 0; i < 0x20000; i++ {
@@ -510,7 +515,7 @@ func TestSampleBuilderData(t *testing.T) {
 }
 
 func BenchmarkSampleBuilderSequential(b *testing.B) {
-	s := New(100, &fakeDepacketizer{}, 1)
+	s := New(100, &fakeDepacketizer{}, 1, WithJitterBufferMinimumLength(1))
 	b.ResetTimer()
 	j := 0
 	for i := 0; i < b.N; i++ {
@@ -536,7 +541,7 @@ func BenchmarkSampleBuilderSequential(b *testing.B) {
 }
 
 func BenchmarkSampleBuilderLoss(b *testing.B) {
-	s := New(100, &fakeDepacketizer{}, 1)
+	s := New(100, &fakeDepacketizer{}, 1, WithJitterBufferMinimumLength(1))
 	b.ResetTimer()
 	j := 0
 	for i := 0; i < b.N; i++ {
@@ -565,7 +570,7 @@ func BenchmarkSampleBuilderLoss(b *testing.B) {
 }
 
 func BenchmarkSampleBuilderReordered(b *testing.B) {
-	s := New(100, &fakeDepacketizer{}, 1)
+	s := New(100, &fakeDepacketizer{}, 1, WithJitterBufferMinimumLength(1))
 	b.ResetTimer()
 	j := 0
 	for i := 0; i < b.N; i++ {
@@ -591,7 +596,7 @@ func BenchmarkSampleBuilderReordered(b *testing.B) {
 }
 
 func BenchmarkSampleBuilderFragmented(b *testing.B) {
-	s := New(100, &fakeDepacketizer{}, 1)
+	s := New(100, &fakeDepacketizer{}, 1, WithJitterBufferMinimumLength(1))
 	b.ResetTimer()
 	j := 0
 	for i := 0; i < b.N; i++ {

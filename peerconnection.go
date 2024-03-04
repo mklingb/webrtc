@@ -2029,6 +2029,9 @@ func (pc *PeerConnection) CreateDataChannel(label string, options *DataChannelIn
 
 	pc.sctpTransport.lock.Lock()
 	pc.sctpTransport.dataChannels = append(pc.sctpTransport.dataChannels, d)
+	if d.ID() != nil {
+		pc.sctpTransport.dataChannelIDsUsed[*d.ID()] = struct{}{}
+	}
 	pc.sctpTransport.dataChannelsRequested++
 	pc.sctpTransport.lock.Unlock()
 
